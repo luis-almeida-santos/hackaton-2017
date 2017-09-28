@@ -17,8 +17,8 @@ import signal
 import sys
 import cv2
 
-panels_horizontal = 2
-panels_vertical = 2
+panels_horizontal = 5
+panels_vertical = 5
 
 draw_panels_outline = False
 draw_world_bg = True
@@ -192,15 +192,15 @@ def draw_data(state, stop_event):
             video.write( np.array(image) )
 
         end_time = time.time()
-        print (end_time - start_time) * 1000
+        #print (end_time - start_time) * 1000
         #logging.debug("finished render frame %d (%fms %d points)" % (state.current_frame_number, (end_time - start_time) * 1000, len(orders)) )
 
 
 
 draw_state = DrawState()
 stop_event = threading.Event()
-fourcc = cv2.VideoWriter_fourcc(*'DIVX')
-video = cv2.VideoWriter("animation.avi", fourcc, 24.0, (columns,rows), 1)
+fourcc = cv2.VideoWriter_fourcc(*'X264')
+video = cv2.VideoWriter("animation.avi", fourcc, 18.0, (columns * 1 ,rows * 1), 1)
 
 producer_thread = threading.Thread(name='data-producer-thread', target=produce_data, args=(draw_state, stop_event, ) )
 producer_thread.setDaemon(True)
@@ -210,7 +210,7 @@ draw_thread = threading.Thread(name='data-draw-thread', target=draw_data, args=(
 draw_thread.start()
 
 # to keep shell alive
-raw_input('Any key to exit')
+raw_input('\n\nAny key to exit\n\n')
 logging.info("Done! \n\n")
 stop_event.set()
 
