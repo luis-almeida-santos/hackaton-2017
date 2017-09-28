@@ -35,8 +35,8 @@ location_cache = FanoutCache('/tmp/geo-location-cache', shards=4, timeout=1)
 
 def geocode_location(location_string):
 
-    logging.debug("Looking for: %s; Cached: %s" % (location_string, location_string in location_cache))
-    
+    #logging.debug("Looking for: %s; Cached: %s" % (location_string, location_string in location_cache))
+
     location = None
     
     if location_string in location_cache:
@@ -57,6 +57,8 @@ def geocode_location(location_string):
 
     return location
 
+def close():
+    location_cache.close()
 '''
 input_location_str = sys.argv[1]
 print "input: %s" %  input_location_str
