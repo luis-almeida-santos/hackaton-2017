@@ -15,6 +15,7 @@ import threading
 import signal
 import sys
 import cv2
+import math
 from math import pi, tan, log
 from time import sleep, time
 from diskcache import FanoutCache
@@ -87,7 +88,7 @@ def fadeAndNormalizeColor(initial_color, percentage):
 #@led_pulse_cache.memoize(typed=True, expire=None, tag='fade_color')
 def fadeColor(initial_color, percentage):
     faded_color_np = np.array(initial_color)
-    faded_color = faded_color_np + (np.array([0, 0, 0]) - faded_color_np) * percentage
+    faded_color = faded_color_np + (np.array([0, 0, 0, 0]) - faded_color_np) * percentage
     faded_color = [int(c) for c in faded_color]
     return tuple(faded_color)
 
@@ -191,8 +192,11 @@ def produce_data(state, stop_event):
             source_duration = TARGET_FPS * 5
             dest_duration = TARGET_FPS * 5
 
-            source_color = (30, 177, 252)
-            dest_color   = (251, 190, 50) 
+            volume = int( max(1, min(10000, math.floor(math.log10(volume)))))
+
+            color_wash_value = int(normalize_value(volume, 10, 60))
+            source_color = fadeColor((30, 177, 252, 0), color_wash_value/100.)
+            dest_color   = fadeColor((251, 190, 50, 0), color_wash_value/100.)
 
             #print "%s -> %s # %d (%d,%d)" % (source_iso_code, dest_iso_code, volume, source_duration, dest_duration)
             if source_key in state.draw_orders:
@@ -236,6 +240,11 @@ def produce_data(state, stop_event):
 
         #sleep(0.500)
 
+def normalize_value(value, min_value, max_value):
+    order = math.ceil(math.log10(value))
+    maximum = math.pow(10, order)
+    minimum = math.pow(10, order - 3) if order > 3  else order
+    return ((max_value-min_value)*(value-minimum)/(maximum-minimum)) + min_value
 
 def draw_panel_outline(draw, color_map, horizontal_number, vertical_number, panel_columns, panel_rows):
     if PLOT_PANELS_OUTLINE:
