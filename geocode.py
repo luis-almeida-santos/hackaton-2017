@@ -13,9 +13,9 @@ import logging
 geocoders = [
     Nominatim(),
     GoogleV3(),
-    DataBC(),
-    ArcGIS(),
-    Yandex(),
+    ## DataBC(),
+    ## ArcGIS(),
+    ## Yandex(),
     #Baidu(),
     #Bing(),
     ##GeocoderDotUS(),
@@ -51,26 +51,10 @@ def geocode_location(location_string):
     if location is None:
         print "%d NOT found in any geo location service" % location_string
     else:
-        print "address: %s " % location.address
-        print "lat/long: %f - %f " % (location.latitude, location.longitude)
+        logging.debug("%s =>  address: %s --> lat/long: %f - %f " % (location_string, location.address, location.latitude, location.longitude))
         location_cache[location_string] = location
 
     return location
 
 def close():
     location_cache.close()
-'''
-input_location_str = sys.argv[1]
-print "input: %s" %  input_location_str
-
-location = geocode_location(input_location_str)
-
-
-if location is not None:
-    columns = 64 * 1
-    rows = 32 * 1
-    print (columns, rows)
-    #img_point = ( (location.longitude*(columns/2)/360), (location.latitude*(rows/2)/180))
-    img_point = ( ((columns/360.0) * (180 + location.longitude)), ((rows/180.0) * (90 - location.latitude)) )
-    print map(lambda x: int(x) ,img_point)
-''' 

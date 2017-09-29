@@ -18,14 +18,20 @@ import cv2
 from math import pi, tan, log
 from time import sleep, time
 from diskcache import FanoutCache
+from sseclient import SSEClient
+import json
+import random
 
-PANELS_HORIZONTAL = 3
-PANELS_VERTICAL = 3
+PANELS_HORIZONTAL = 2
+PANELS_VERTICAL = 2
 
 PLOT_PANELS_OUTLINE = False
 PLOT_BACKGROUND_MAP = True
-PLOT_FAKE_LOCATIONS = True
+PLOT_FAKE_LOCATIONS = False
+
 OUTPUT_VIDEO = True
+
+EVENTS_SOURCE_URL="http://localhost:8080/events"
 
 # world cities, to test only
 LOCATIONS = [
@@ -47,11 +53,11 @@ TOTAL_PANELS = PANELS_HORIZONTAL * PANELS_VERTICAL
 COLUMNS = PANEL_COLUMNS * PANELS_HORIZONTAL
 ROWS = PANEL_ROWS * PANELS_VERTICAL
 
-TARGET_FPS = 12
-TIME_PER_FRAME_MS = (1 / TARGET_FPS) * 1000
+TARGET_FPS = 24.
+TIME_PER_FRAME_MS = (1 / TARGET_FPS) * 1000.
 
-VIDEO_FPS = 24
-TIME_PER_VIDEO_FRAME_MS = (1 / VIDEO_FPS) * 1000
+VIDEO_FPS = 24.
+TIME_PER_VIDEO_FRAME_MS = (1 / VIDEO_FPS) * 1000.
 
 VIDEO_HEIGHT = 1080
 VIDEO_WIDTH = (COLUMNS * VIDEO_HEIGHT) / ROWS
@@ -75,6 +81,13 @@ def fadeAndNormalizeColor(initial_color, percentage):
     faded_color = [c * 255 for c in initial_color]
     faded_color_np = np.array(faded_color)
     faded_color = faded_color_np + (np.array([0, 0, 0, 0]) - faded_color_np) * percentage
+    faded_color = [int(c) for c in faded_color]
+    return tuple(faded_color)
+
+#@led_pulse_cache.memoize(typed=True, expire=None, tag='fade_color')
+def fadeColor(initial_color, percentage):
+    faded_color_np = np.array(initial_color)
+    faded_color = faded_color_np + (np.array([0, 0, 0]) - faded_color_np) * percentage
     faded_color = [int(c) for c in faded_color]
     return tuple(faded_color)
 
@@ -109,22 +122,31 @@ class DrawOrder(object):
                  frame_number,
                  x,
                  y,
-                 color_map="Blues_r",
+                 color,
                  duration=TARGET_FPS,
+                 quantity=0,
+                 quantity_used=0,
                  drawn_frames=0
                 ):
         self.frame_number = frame_number
         self.x = x
         self.y = y
-        self.color_map = color_map
+        self.color = color,
         self.duration = duration
         self.drawn_frames = drawn_frames
+        self.quantity = quantity
+        self.quantity_used = quantity_used
 
     def __str__(self):
-        return "frame: %-10d x: %4d y:%4d duration: %3d drawn_frames: %3d color map: %s" % (self.frame_number, self.x, self.y, self.duration, self.drawn_frames, self.color_map)
+        return "frame: %-10d x: %4d y:%4d duration: %3d drawn_frames: %3d quantity: %6d / %6d color: %s" % (self.frame_number, self.x, self.y, self.duration, self.drawn_frames, self.quantity, self.quantity_used, self.color)
 
     def get_point(self):
         return (self.x, self.y)
+
+    def get_color_for_quantity_used(self):
+        fade_percentage = self.quantity_used / self.quantity
+        # ?!?!?! WTF!!!
+        return fadeColor(self.color[0], fade_percentage)
 
 
 # Produce data and add to shared datastore
@@ -132,26 +154,87 @@ def produce_data(state, stop_event):
     logging.debug("Starting producing data")
 
     color_maps = ["Blues_r","Greens_r"]
+
     while not stop_event.isSet():
 
-        if PLOT_FAKE_LOCATIONS:
-            for location in sample(LOCATIONS, 350):
-                geopoint = geocode.geocode_location(location)
-                key = (geopoint.latitude, geopoint.longitude)
-                duration = randint(1, TARGET_FPS * 20)
-                if key in state.draw_orders:
-                    #just update the duration...
-                    state.draw_orders[key].duration = duration
-                else:
-                    location_point = convert_geopoint_to_img_coordinates(geopoint.latitude, geopoint.longitude, COLUMNS, ROWS)
-                    draw_order = DrawOrder(frame_number=state.current_frame_number,
-                                           x=location_point[0], 
-                                           y=location_point[1],
-                                           color_map=sample(color_maps, 1)[0],
-                                           duration=duration)
-                    state.draw_orders[key] = draw_order
+        events = SSEClient(EVENTS_SOURCE_URL)
+        for event in events:
+            data = json.loads(event.data)
+            source_iso_code = data['source']['iso']
+            dest_iso_code = data['dest']['iso']
+            volume = int(data['volume'])
 
-        sleep(0.500)
+            geopoint_source = geocode.geocode_location(source_iso_code)
+            geopoint_dest = geocode.geocode_location(dest_iso_code)
+
+            # source_lat = geopoint_source.latitude
+            # source_lon = geopoint_source.longitude
+            # dest_lat =   geopoint_dest.latitude
+            # dest_lon =   geopoint_dest.longitude
+
+            source_lat = float(data['source']['lat'])
+            source_lon = float(data['source']['lon'])
+            dest_lat =   float(data['dest']['lat'])
+            dest_lon =   float(data['dest']['lon'])
+
+            fuzzy_source_lat = source_lat + random.uniform(-0.00001, 0.00001)
+            fuzzy_source_lon = source_lon + random.uniform(-0.00001, 0.00001)
+            fuzzy_dest_lat   = dest_lat   + random.uniform(-0.00001, 0.00001)
+            fuzzy_dest_lon   = dest_lon   + random.uniform(-0.00001, 0.00001)
+
+            source_point = convert_geopoint_to_img_coordinates(fuzzy_source_lat, fuzzy_source_lon, COLUMNS, ROWS)
+            dest_point = convert_geopoint_to_img_coordinates(fuzzy_dest_lat, fuzzy_dest_lon, COLUMNS, ROWS)
+
+            source_key = source_point
+            dest_key = dest_point
+
+            source_duration = TARGET_FPS * 5
+            dest_duration = TARGET_FPS * 5
+
+            source_color = (30, 177, 252)
+            dest_color   = (251, 190, 50) 
+
+            #print "%s -> %s # %d (%d,%d)" % (source_iso_code, dest_iso_code, volume, source_duration, dest_duration)
+            if source_key in state.draw_orders:
+                state.draw_orders[source_key].quantity += volume
+            else:
+                draw_order = DrawOrder(frame_number=state.current_frame_number,
+                                       x=source_point[0], 
+                                       y=source_point[1],
+                                       color=source_color,
+                                       duration=source_duration,
+                                       quantity=volume )
+                state.draw_orders[source_key] = draw_order
+
+            if dest_key in state.draw_orders:
+                state.draw_orders[dest_key].duration = volume
+            else:
+                draw_order = DrawOrder(frame_number=state.current_frame_number,
+                                       x=dest_point[0], 
+                                       y=dest_point[1],
+                                       color=dest_color,
+                                       duration=dest_duration,
+                                       quantity=volume)
+                state.draw_orders[dest_key] = draw_order
+
+       # if PLOT_FAKE_LOCATIONS:
+       #     for location in sample(LOCATIONS, 350):
+       #         geopoint = geocode.geocode_location(location)
+       #         key = (geopoint.latitude, geopoint.longitude)
+       #         duration = randint(1, TARGET_FPS * 20)
+       #         if key in state.draw_orders:
+       #             #just update the duration...
+       #             state.draw_orders[key].duration = duration
+       #         else:
+       #             location_point = convert_geopoint_to_img_coordinates(geopoint.latitude, geopoint.longitude, COLUMNS, ROWS)
+       #             draw_order = DrawOrder(frame_number=state.current_frame_number,
+       #                                    x=location_point[0], 
+       #                                    y=location_point[1],
+       #                                    color_map=sample(color_maps, 1)[0],
+       #                                    duration=duration)
+       #             state.draw_orders[key] = draw_order
+
+        #sleep(0.500)
 
 
 def draw_panel_outline(draw, color_map, horizontal_number, vertical_number, panel_columns, panel_rows):
@@ -179,7 +262,6 @@ def load_background_pixels(image_width, image_height):
             for x, y in shape.points:
                 px = int(COLUMNS - ((bg_sf.bbox[2] - x) * xratio))
                 py = int((bg_sf.bbox[3] - y) * yratio)
-                #print (px, py)
                 pixels.append((px, py))
             result.append(pixels)
     return result
@@ -187,7 +269,7 @@ def load_background_pixels(image_width, image_height):
 def draw_background(draw, pixels_list):
     if PLOT_BACKGROUND_MAP:
         for pixels in pixels_list:
-            draw.polygon(pixels, outline=(25,15,15), fill=None)
+            draw.polygon(pixels, outline=(21,12,12), fill=None)
 
 # Cycle through shared datastore and draw image
 def draw_data(state, stop_event):
@@ -208,23 +290,24 @@ def draw_data(state, stop_event):
         frame_number = state.current_frame_number
         state.current_frame_number += 1
 
+        draw_orders = state.draw_orders.copy().items()
 
-        
-        [draw_frame_order(draw, frame_number, do, state) for do in state.draw_orders.copy().items()]
-        
+        [draw_frame_order(draw, frame_number, do, state) for do in draw_orders]
+
         state.current_image = image.copy()
-        #logging.debug("finished render frame %d (%fms %d points)" % (state.current_frame_number, (end_time - start_time) * 1000, len(orders)) )
+
         end_time = time()
         duration = (end_time - start_time) * 1000
+        #logging.debug("finished render frame %d (%fms)" % (state.current_frame_number, duration) )
         delta = TIME_PER_FRAME_MS - duration
-        if delta < 0.25:
+        if delta > 0 and delta < 0.250:
             continue
         else:
             if delta > 0:
                 sleep(delta / 1000)
             else:
                 if delta != 0:
-                    print (frame_number, delta)
+                    logging.info("Slow frame! %d took %dms " % (frame_number, duration))
 
 def draw_frame_order(draw,frame_number,draw_order_item, state):
     draw_order_key = draw_order_item[0]
@@ -238,9 +321,10 @@ def draw_frame_order(draw,frame_number,draw_order_item, state):
         draw.point(point, (0,0,0))
         state.draw_orders.pop(draw_order_key, None)
     else:
-        color_map = plt.get_cmap(draw_order.color_map)
-        color = rgba_to_rgb(color_map(draw_order.duration - draw_order.drawn_frames))
-        # logging.debug("order: %s color: %s" % (draw_order, color))
+        quantity_step = draw_order.quantity / draw_order.duration
+        draw_order.quantity_used += quantity_step
+        color = draw_order.get_color_for_quantity_used() 
+        #logging.debug("order: %s color: %s" % (draw_order, color))
         draw.point(point, color)
         draw_order.drawn_frames += 1
 
@@ -260,7 +344,7 @@ def output_data(state, stop_event):
         if OUTPUT_VIDEO:
             since_last_frame = (time() - last_frame_time) * 1000
             if since_last_frame >= TIME_PER_VIDEO_FRAME_MS and state.current_image is not None:
-                video_image = state.current_image.resize(video_size, Image.ANTIALIAS)
+                video_image = state.current_image.resize(video_size, Image.BOX)
                 video.write(np.array(video_image))
                 last_frame_time = time()
 

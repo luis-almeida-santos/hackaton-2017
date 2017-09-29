@@ -4,3 +4,4 @@ pyshp==1.2.12
 diskcache==2.9.0
 Pillow==4.2.1
 numpy==1.13.1
+sseclient==0.0.18
