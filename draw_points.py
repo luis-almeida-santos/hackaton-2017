@@ -19,10 +19,10 @@ from math import pi, tan, log
 from time import sleep, time
 from diskcache import FanoutCache
 
-panels_horizontal = 3
-panels_vertical = 3
+PANELS_HORIZONTAL = 4
+PANELS_VERTICAL = 4
 
-PLOT_PANELS_OUTLINE = False
+PLOT_PANELS_OUTLINE = True
 PLOT_BACKGROUND_MAP = True
 PLOT_FAKE_LOCATIONS = True
 OUTPUT_VIDEO = True
@@ -43,9 +43,9 @@ LOCATIONS = [
 # -----------------------------
 PANEL_COLUMNS = 64
 PANEL_ROWS = 32
-TOTAL_PANELS = panels_horizontal * panels_vertical
-COLUMNS = PANEL_COLUMNS * panels_horizontal
-ROWS = PANEL_ROWS * panels_vertical
+TOTAL_PANELS = PANELS_HORIZONTAL * PANELS_VERTICAL
+COLUMNS = PANEL_COLUMNS * PANELS_HORIZONTAL
+ROWS = PANEL_ROWS * PANELS_VERTICAL
 
 TARGET_FPS = 12
 TIME_PER_FRAME_MS = (1 / TARGET_FPS) * 1000
@@ -53,19 +53,22 @@ TIME_PER_FRAME_MS = (1 / TARGET_FPS) * 1000
 VIDEO_FPS = 24
 TIME_PER_VIDEO_FRAME_MS = (1 / VIDEO_FPS) * 1000
 
+VIDEO_HEIGHT = 1080
+VIDEO_WIDTH = (COLUMNS * VIDEO_HEIGHT) / ROWS
+
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)-15s [%(levelname)s] (%(threadName)-10s) %(message)s',
                    )
 
-coordinates_cache = FanoutCache('/tmp/pulse-coordinates-cache', shards=10, timeout=1)
+led_pulse_cache = FanoutCache('/tmp/pulse-led-matrix-cache', shards=20, timeout=1)
 
-@coordinates_cache.memoize(typed=True, expire=None)
-def convert_geopoint_to_img_coordinates(latitude, longitude):
-    x = int((COLUMNS/360.0) * (180 + longitude))
+@led_pulse_cache.memoize(typed=True, expire=None, tag='latlon_to_xy')
+def convert_geopoint_to_img_coordinates(latitude, longitude, map_width, map_height):
+    x = int((map_width/360.0) * (180 + longitude))
     #convert from degrees to radians
     latRad = latitude*pi/180
     mercN = log(tan((pi/4)+(latRad/2)))
-    y = int((ROWS/2)-(COLUMNS*mercN/(2*pi)))
+    y = int((map_height/2)-(map_width*mercN/(2*pi)))
     return (x, y)
 
 def fadeAndNormalizeColor(initial_color, percentage):
@@ -75,6 +78,7 @@ def fadeAndNormalizeColor(initial_color, percentage):
     faded_color = [int(c) for c in faded_color]
     return tuple(faded_color)
 
+@led_pulse_cache.memoize(typed=True, expire=None, tag='rgba_to_rgb')
 def rgba_to_rgb(color):
     return tuple([int(c * 255) for c in color])
 
@@ -131,7 +135,7 @@ def produce_data(state, stop_event):
     while not stop_event.isSet():
 
         if PLOT_FAKE_LOCATIONS:
-            for location in sample(LOCATIONS, 250):
+            for location in sample(LOCATIONS, 350):
                 geopoint = geocode.geocode_location(location)
                 key = (geopoint.latitude, geopoint.longitude)
                 duration = randint(1, TARGET_FPS * 20)
@@ -139,7 +143,7 @@ def produce_data(state, stop_event):
                     #just update the duration...
                     state.draw_orders[key].duration = duration
                 else:
-                    location_point = convert_geopoint_to_img_coordinates(geopoint.latitude, geopoint.longitude)
+                    location_point = convert_geopoint_to_img_coordinates(geopoint.latitude, geopoint.longitude, COLUMNS, ROWS)
                     draw_order = DrawOrder(frame_number=state.current_frame_number,
                                            x=location_point[0], 
                                            y=location_point[1],
@@ -150,17 +154,17 @@ def produce_data(state, stop_event):
         sleep(0.500)
 
 
-def draw_panel_outline(draw, color_map):
+def draw_panel_outline(draw, color_map, horizontal_number, vertical_number, panel_columns, panel_rows):
     if PLOT_PANELS_OUTLINE:
-        for v in range(0, panels_vertical):
-            for h in range(0, panels_horizontal):
-                x = PANEL_COLUMNS * h
-                y = PANEL_ROWS * v
-                cell_id = h + v + v * (panels_horizontal - 1)
+        for v in range(0, vertical_number):
+            for h in range(0, horizontal_number):
+                x = panel_columns * h
+                y = panel_rows * v
+                cell_id = h + v + v * (horizontal_number - 1)
                 color = color_map(cell_id)
-                color_outline = fadeAndNormalizeColor(color, 0.25)
-                #logging.debug("%3d: (%4d,%4d) -> (%4d,%4d) color: %s" % (cell_id, x, y, x + PANEL_COLUMNS, y + panel_ROWS, color_fill))
-                draw.rectangle((x, y, x + PANEL_COLUMNS - 1, y + PANEL_ROWS - 1), fill=None, outline=color_outline)
+                color_outline = fadeAndNormalizeColor(color, 0.75)
+                #logging.debug("%3d: (%4d,%4d) -> (%4d,%4d) color: %s" % (cell_id, x, y, x + panel_columns, y + panel_rows, color_fill))
+                draw.rectangle((x, y, x + panel_columns - 1, y + panel_rows - 1), fill=None, outline=color_outline)
 
 def load_background_pixels():
     result = []
@@ -184,21 +188,21 @@ def load_background_pixels():
 def draw_background(draw, pixels_list):
     if PLOT_BACKGROUND_MAP:
         for pixels in pixels_list:
-            draw.polygon(pixels, outline=(20, 20, 20), fill=(0, 0, 0))
+            draw.polygon(pixels, outline=(10, 10, 10), fill=(0, 0, 0))
 
 # Cycle through shared datastore and draw image
 def draw_data(state, stop_event):
     logging.debug("Starting drawing")
 
     bg_pixels_list = load_background_pixels()
-    panel_outline_max_colors = panels_horizontal * panels_vertical
+    panel_outline_max_colors = PANELS_HORIZONTAL * PANELS_VERTICAL
     panel_outline_color_map = plt.get_cmap('rainbow_r', panel_outline_max_colors)
 
     image = Image.new("RGB", (COLUMNS, ROWS))
     draw = ImageDraw.Draw(image)
     
     draw_background(draw, bg_pixels_list)
-    draw_panel_outline(draw, panel_outline_color_map)
+    draw_panel_outline(draw, panel_outline_color_map, PANELS_HORIZONTAL, PANELS_VERTICAL, PANEL_COLUMNS, PANEL_ROWS)
 
     while not stop_event.isSet():
         start_time = time()
@@ -212,7 +216,7 @@ def draw_data(state, stop_event):
         end_time = time()
         duration = (end_time - start_time) * 1000
         delta = TIME_PER_FRAME_MS - duration
-        if delta < 1:
+        if delta < 0.25:
             continue
         else:
             if delta > 0:
@@ -234,7 +238,7 @@ def draw_frame_order(draw,frame_number,draw_order_item, state):
         state.draw_orders.pop(draw_order_key, None)
     else:
         color_map = plt.get_cmap(draw_order.color_map)
-        color = tuple([int(c * 255) for c in color_map(draw_order.duration - draw_order.drawn_frames)]) #rgba_to_rgb(color_map(draw_order.duration - draw_order.drawn_frames))
+        color = rgba_to_rgb(color_map(draw_order.duration - draw_order.drawn_frames))
         # logging.debug("order: %s color: %s" % (draw_order, color))
         draw.point(point, color)
         draw_order.drawn_frames += 1
@@ -242,8 +246,9 @@ def draw_frame_order(draw,frame_number,draw_order_item, state):
 def output_data(state, stop_event):
     logging.debug("Starting to push data to output")
 
+    video_size = (VIDEO_WIDTH, VIDEO_HEIGHT)
     fourcc = cv2.VideoWriter_fourcc(*'X264')
-    video = cv2.VideoWriter("animation.avi", fourcc, VIDEO_FPS, (COLUMNS, ROWS), 1)
+    video = cv2.VideoWriter("animation.avi", fourcc, VIDEO_FPS, video_size, 1)
 
     last_frame_time = 0
     while not stop_event.isSet():
@@ -254,7 +259,8 @@ def output_data(state, stop_event):
         if OUTPUT_VIDEO:
             since_last_frame = (time() - last_frame_time) * 1000
             if since_last_frame >= TIME_PER_VIDEO_FRAME_MS and state.current_image is not None:
-                video.write(np.array(state.current_image))
+                video_image = state.current_image.resize(video_size, Image.NONE)
+                video.write(np.array(video_image))
                 last_frame_time = time()
 
     video.release()
@@ -282,6 +288,7 @@ producer_thread.start()
 draw_thread.start()
 output_thread.start()
 
+sleep(2)
 # to keep shell alive
 raw_input('\n\nAny key to exit\n\n')
 logging.info("Done! \n\n")
@@ -291,8 +298,6 @@ geocode.close()
 
 producer_thread.join()
 draw_thread.join()
-
-
 
 if OUTPUT_VIDEO:
     logging.info("Saving animation.avi")
