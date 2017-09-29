@@ -19,10 +19,10 @@ from math import pi, tan, log
 from time import sleep, time
 from diskcache import FanoutCache
 
-PANELS_HORIZONTAL = 4
-PANELS_VERTICAL = 4
+PANELS_HORIZONTAL = 3
+PANELS_VERTICAL = 3
 
-PLOT_PANELS_OUTLINE = True
+PLOT_PANELS_OUTLINE = False
 PLOT_BACKGROUND_MAP = True
 PLOT_FAKE_LOCATIONS = True
 OUTPUT_VIDEO = True
@@ -131,7 +131,7 @@ class DrawOrder(object):
 def produce_data(state, stop_event):
     logging.debug("Starting producing data")
 
-    color_maps = ["Blues","Greens", "Oranges", "Reds", "Blues_r","Greens_r", "Oranges_r", "Reds_r"]
+    color_maps = ["Blues_r","Greens_r"]
     while not stop_event.isSet():
 
         if PLOT_FAKE_LOCATIONS:
@@ -162,19 +162,18 @@ def draw_panel_outline(draw, color_map, horizontal_number, vertical_number, pane
                 y = panel_rows * v
                 cell_id = h + v + v * (horizontal_number - 1)
                 color = color_map(cell_id)
-                color_outline = fadeAndNormalizeColor(color, 0.75)
+                color_outline = fadeAndNormalizeColor(color, 0.05)
                 #logging.debug("%3d: (%4d,%4d) -> (%4d,%4d) color: %s" % (cell_id, x, y, x + panel_columns, y + panel_rows, color_fill))
                 draw.rectangle((x, y, x + panel_columns - 1, y + panel_rows - 1), fill=None, outline=color_outline)
 
-def load_background_pixels():
+def load_background_pixels(image_width, image_height):
     result = []
     if PLOT_BACKGROUND_MAP:
-        bg_sf = shapefile.Reader("ne_10m_coastline/ne_10m_coastline")
+        bg_sf = shapefile.Reader("ne_110m_coastline/ne_110m_coastline")
         xdist = bg_sf.bbox[2] - bg_sf.bbox[0]
         ydist = bg_sf.bbox[3] - bg_sf.bbox[1]
-        xratio = COLUMNS/xdist
-        yratio = ROWS/ydist
-
+        xratio = image_width/xdist
+        yratio = image_height/ydist
         for shape in bg_sf.shapes():
             pixels = []
             for x, y in shape.points:
@@ -188,19 +187,19 @@ def load_background_pixels():
 def draw_background(draw, pixels_list):
     if PLOT_BACKGROUND_MAP:
         for pixels in pixels_list:
-            draw.polygon(pixels, outline=(10, 10, 10), fill=(0, 0, 0))
+            draw.polygon(pixels, outline=(25,15,15), fill=None)
 
 # Cycle through shared datastore and draw image
 def draw_data(state, stop_event):
     logging.debug("Starting drawing")
 
-    bg_pixels_list = load_background_pixels()
+    bg_pixels_list = load_background_pixels(COLUMNS, ROWS)
     panel_outline_max_colors = PANELS_HORIZONTAL * PANELS_VERTICAL
     panel_outline_color_map = plt.get_cmap('rainbow_r', panel_outline_max_colors)
 
     image = Image.new("RGB", (COLUMNS, ROWS))
     draw = ImageDraw.Draw(image)
-    
+
     draw_background(draw, bg_pixels_list)
     draw_panel_outline(draw, panel_outline_color_map, PANELS_HORIZONTAL, PANELS_VERTICAL, PANEL_COLUMNS, PANEL_ROWS)
 
@@ -209,6 +208,8 @@ def draw_data(state, stop_event):
         frame_number = state.current_frame_number
         state.current_frame_number += 1
 
+
+        
         [draw_frame_order(draw, frame_number, do, state) for do in state.draw_orders.copy().items()]
         
         state.current_image = image.copy()
@@ -259,7 +260,7 @@ def output_data(state, stop_event):
         if OUTPUT_VIDEO:
             since_last_frame = (time() - last_frame_time) * 1000
             if since_last_frame >= TIME_PER_VIDEO_FRAME_MS and state.current_image is not None:
-                video_image = state.current_image.resize(video_size, Image.NONE)
+                video_image = state.current_image.resize(video_size, Image.ANTIALIAS)
                 video.write(np.array(video_image))
                 last_frame_time = time()
 
