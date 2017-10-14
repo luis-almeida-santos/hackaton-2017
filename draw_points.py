@@ -23,8 +23,8 @@ from sseclient import SSEClient
 import json
 import random
 
-PANELS_HORIZONTAL = 2
-PANELS_VERTICAL = 2
+PANELS_HORIZONTAL = 4
+PANELS_VERTICAL = 4
 
 PLOT_PANELS_OUTLINE = False
 PLOT_BACKGROUND_MAP = True
@@ -32,7 +32,7 @@ PLOT_FAKE_LOCATIONS = False
 
 OUTPUT_VIDEO = True
 
-EVENTS_SOURCE_URL="http://localhost:8080/events"
+EVENTS_SOURCE_URL="http://localhost:9201/events"
 
 # world cities, to test only
 LOCATIONS = [
@@ -160,6 +160,9 @@ def produce_data(state, stop_event):
 
         events = SSEClient(EVENTS_SOURCE_URL)
         for event in events:
+            if event.data is None or not event.data:
+                continue
+
             data = json.loads(event.data)
             source_iso_code = data['source']['iso']
             dest_iso_code = data['dest']['iso']
@@ -168,20 +171,15 @@ def produce_data(state, stop_event):
             geopoint_source = geocode.geocode_location(source_iso_code)
             geopoint_dest = geocode.geocode_location(dest_iso_code)
 
-            # source_lat = geopoint_source.latitude
-            # source_lon = geopoint_source.longitude
-            # dest_lat =   geopoint_dest.latitude
-            # dest_lon =   geopoint_dest.longitude
-
             source_lat = float(data['source']['lat'])
             source_lon = float(data['source']['lon'])
             dest_lat =   float(data['dest']['lat'])
             dest_lon =   float(data['dest']['lon'])
 
-            fuzzy_source_lat = source_lat + random.uniform(-0.00001, 0.00001)
-            fuzzy_source_lon = source_lon + random.uniform(-0.00001, 0.00001)
-            fuzzy_dest_lat   = dest_lat   + random.uniform(-0.00001, 0.00001)
-            fuzzy_dest_lon   = dest_lon   + random.uniform(-0.00001, 0.00001)
+            fuzzy_source_lat = source_lat + random.uniform(-0.000001, 0.0000001)
+            fuzzy_source_lon = source_lon + random.uniform(-0.000001, 0.0000001)
+            fuzzy_dest_lat   = dest_lat   + random.uniform(-0.000001, 0.0000001)
+            fuzzy_dest_lon   = dest_lon   + random.uniform(-0.000001, 0.0000001)
 
             source_point = convert_geopoint_to_img_coordinates(fuzzy_source_lat, fuzzy_source_lon, COLUMNS, ROWS)
             dest_point = convert_geopoint_to_img_coordinates(fuzzy_dest_lat, fuzzy_dest_lon, COLUMNS, ROWS)
@@ -194,7 +192,7 @@ def produce_data(state, stop_event):
 
             volume = int( max(1, min(10000, math.floor(math.log10(volume)))))
 
-            color_wash_value = int(normalize_value(volume, 10, 60))
+            color_wash_value = int(normalize_value(volume, 5, 10))
             source_color = fadeColor((30, 177, 252, 0), color_wash_value/100.)
             dest_color   = fadeColor((251, 190, 50, 0), color_wash_value/100.)
 
@@ -261,7 +259,7 @@ def draw_panel_outline(draw, color_map, horizontal_number, vertical_number, pane
 def load_background_pixels(image_width, image_height):
     result = []
     if PLOT_BACKGROUND_MAP:
-        bg_sf = shapefile.Reader("ne_110m_coastline/ne_110m_coastline")
+        bg_sf = shapefile.Reader("ne_110m_coastline/ne_110m_coastline.shp")
         xdist = bg_sf.bbox[2] - bg_sf.bbox[0]
         ydist = bg_sf.bbox[3] - bg_sf.bbox[1]
         xratio = image_width/xdist
@@ -273,12 +271,13 @@ def load_background_pixels(image_width, image_height):
                 py = int((bg_sf.bbox[3] - y) * yratio)
                 pixels.append((px, py))
             result.append(pixels)
+
     return result
 
 def draw_background(draw, pixels_list):
     if PLOT_BACKGROUND_MAP:
         for pixels in pixels_list:
-            draw.polygon(pixels, outline=(21,12,12), fill=None)
+            draw.polygon(pixels, outline=(40,25,25), fill=None)
 
 # Cycle through shared datastore and draw image
 def draw_data(state, stop_event):
