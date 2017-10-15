@@ -1,5 +1,5 @@
 geopy==1.11.0
-matplotlib==2.0.2
+matplotlib==2.1.0
 pyshp==1.2.12
 diskcache==2.9.0
 Pillow==4.2.1

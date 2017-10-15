@@ -2,43 +2,23 @@ import json
 import sys
 
 from diskcache import FanoutCache
-
-from geopy.geocoders import ArcGIS
-from geopy.geocoders import DataBC
 from geopy.geocoders import GoogleV3
 from geopy.geocoders import Nominatim
-from geopy.geocoders import Yandex
 import logging
 
 geocoders = [
     Nominatim(),
-    GoogleV3(),
-    ## DataBC(),
-    ## ArcGIS(),
-    ## Yandex(),
-    #Baidu(),
-    #Bing(),
-    ##GeocoderDotUS(),
-    ##GeocodeFarm(),
-    #GeoNames(),
-    #OpenCage(),
-    ##OpenMapQuest(),
-    ##NaviData(),
-    #YahooPlaceFinder(),
-    #LiveAddress(),
-    #What3Words(),
-    #IGNFrance(),
-    #Phot()
+    GoogleV3()
 ]
 
-location_cache = FanoutCache('/tmp/geo-location-cache', shards=4, timeout=1)
+location_cache = FanoutCache('./geo-location-cache', shards=4, timeout=1)
 
 def geocode_location(location_string):
 
     #logging.debug("Looking for: %s; Cached: %s" % (location_string, location_string in location_cache))
 
     location = None
-    
+
     if location_string in location_cache:
         return location_cache[location_string]
     else:
