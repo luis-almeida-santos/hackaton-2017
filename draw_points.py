@@ -24,99 +24,15 @@ from diskcache import FanoutCache
 from sseclient import SSEClient
 import json
 import random
+import argparse
 
 
-PANELS_HORIZONTAL = 1
-PANELS_VERTICAL = 1
-
-PLOT_PANELS_OUTLINE = False
-PLOT_BACKGROUND_MAP = True
-
-EVENTS_SOURCE_URL="http://192.168.1.7:9201/events"
-
-CACHE_LOCATION='./pulse-led-matrix-cache'
-
-# -----------------------------
-PANEL_COLUMNS = 64
-PANEL_ROWS = 32
-TOTAL_PANELS = PANELS_HORIZONTAL * PANELS_VERTICAL
-COLUMNS = PANEL_COLUMNS * PANELS_HORIZONTAL
-ROWS = PANEL_ROWS * PANELS_VERTICAL
-
-TARGET_FPS = 24.
-TIME_PER_FRAME_MS = (1 / TARGET_FPS) * 1000.
-
-VIDEO_FPS = 24.
-TIME_PER_VIDEO_FRAME_MS = (1 / VIDEO_FPS) * 1000.
-
-VIDEO_HEIGHT = 1080
-VIDEO_WIDTH = (COLUMNS * VIDEO_HEIGHT) / ROWS
-
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)-15s [%(levelname)s] (%(threadName)-10s) %(message)s',
-                   )
-
-led_pulse_cache = FanoutCache(CACHE_LOCATION, shards=20, timeout=1)
-
-#@led_pulse_cache.memoize(typed=True, expire=None, tag='latlon_to_xy')
-def convert_geopoint_to_img_coordinates(latitude, longitude, map_width, map_height):
-    x = int((map_width/360.0) * (180 + longitude))
-    #convert from degrees to radians
-    latRad = latitude*pi/180
-    mercN = log(tan((pi/4)+(latRad/2)))
-    y = int((map_height/2)-(map_width*mercN/(2*pi)))
-    return (x, y)
-
-def fadeAndNormalizeColor(initial_color, percentage):
-    faded_color = [c * 255 for c in initial_color]
-    faded_color_np = np.array(faded_color)
-    faded_color = faded_color_np + (np.array([0, 0, 0, 0]) - faded_color_np) * percentage
-    faded_color = [int(c) for c in faded_color]
-    return tuple(faded_color)
-
-#@led_pulse_cache.memoize(typed=True, expire=None, tag='fade_color')
 def fadeColor(initial_color, percentage):
     faded_color_np = np.array(initial_color)
     faded_color = faded_color_np + (np.array([0, 0, 0, 0]) - faded_color_np) * percentage
     faded_color = [int(c) for c in faded_color]
     return tuple(faded_color)
 
-#@led_pulse_cache.memoize(typed=True, expire=None, tag='rgba_to_rgb')
-def rgba_to_rgb(color):
-    return tuple([int(c * 255) for c in color])
-
-def countdown(matrix):
-    for value in reversed(range(0, 10)):
-        draw_text(matrix, (COLUMNS / 2), (ROWS / 2), str(value), 20)
-        sleep(0.25)
-
-    matrix.Clear()
-
-def draw_text(matrix, x, y, text, size = 20):
-    font = ImageFont.truetype('fonts/FiraCode-Regular.ttf', size)
-    image = Image.new("RGB", (COLUMNS, ROWS))
-    draw = ImageDraw.Draw(image)
-
-    text_width, text_height = font.getsize(text)
-
-    draw.text((x - text_width/2 ,y - text_height/2), text, font=font, fill=(41,161,228,0))
-
-    matrix.SetImage(image.convert('RGB'))
-
-def draw_logo(matrix):
-    logging.info("Display TS logo...")
-    logo_image = Image.open("images/tradeshift.jpg")
-    logo_image.thumbnail((COLUMNS, ROWS), Image.ANTIALIAS)
-    logo_image_width, logo_image_height = logo_image.size
-
-    x = (COLUMNS - logo_image_width) / 2
-    y = (ROWS - logo_image_height) / 2
-
-    led_matrix.SetImage(logo_image.convert('RGB'), x, y)
-
-    logging.info("Done displaying logo")
-
-#shared datastore
 class DrawState(object):
     def __init__(self,
                  current_frame_number=0,
@@ -131,7 +47,7 @@ class DrawOrder(object):
                  x,
                  y,
                  color,
-                 duration=TARGET_FPS,
+                 duration=10,
                  quantity=0,
                  quantity_used=0,
                  drawn_frames=0
@@ -155,219 +71,283 @@ class DrawOrder(object):
         fade_percentage = self.quantity_used / self.quantity
         return fadeColor(self.color[0], fade_percentage)
 
-# Produce data and add to shared datastore
-def produce_data(state, stop_event):
-    logging.debug("Starting producing data")
+class PulseDataProducer(object):
+    def __init__(self, state, stop_event, source_url, target_fps, map_width, map_height):
+        self.state = state
+        self.stop_event = stop_event
+        self.source_url = source_url
+        self.target_fps = target_fps
+        self.map_width = map_width
+        self.map_height = map_height
 
-    while not stop_event.isSet():
+    def run(self):
+        while not self.stop_event.isSet():
+            events = SSEClient(self.source_url)
+            for event in events:
+                if event.data is None or not event.data:
+                    continue
 
-        events = SSEClient(EVENTS_SOURCE_URL)
-        for event in events:
-            logging.debug("Event received!")
-            if event.data is None or not event.data:
+                data = json.loads(event.data)
+                source_iso_code = data['source']['iso']
+                dest_iso_code = data['dest']['iso']
+                volume = int(data['volume'])
+
+                source_lat = float(data['source']['lat'])
+                source_lon = float(data['source']['lon'])
+                dest_lat = float(data['dest']['lat'])
+                dest_lon = float(data['dest']['lon'])
+
+                source_point = self.convert_geopoint_to_img_coordinates(source_lat, source_lon, self.map_width, self.map_height)
+                dest_point = self.convert_geopoint_to_img_coordinates(dest_lat, dest_lon, self.map_width, self.map_height)
+
+                source_key = source_point
+                dest_key = dest_point
+
+                source_duration = self.target_fps * 5
+                dest_duration = self.target_fps * 5
+
+                volume = int(max(1, min(10000, math.floor(math.log10(volume)))))
+
+                color_wash_value = int(self.normalize_value(volume, 5, 10))
+                source_color = fadeColor((30, 177, 252, 0), color_wash_value/100.)
+                dest_color = fadeColor((251, 190, 50, 0), color_wash_value/100.)
+
+                frame_number = self.state.current_frame_number
+                if source_key in self.state.draw_orders:
+                    self.state.draw_orders[source_key].quantity += volume
+                else:
+                    draw_order = DrawOrder(frame_number=frame_number,
+                                           x=source_point[0],
+                                           y=source_point[1],
+                                           color=source_color,
+                                           duration=source_duration,
+                                           quantity=volume)
+                    self.state.draw_orders[source_key] = draw_order
+
+                if dest_key in self.state.draw_orders:
+                    self.state.draw_orders[dest_key].duration = volume
+                else:
+                    draw_order = DrawOrder(frame_number=frame_number,
+                                           x=dest_point[0],
+                                           y=dest_point[1],
+                                           color=dest_color,
+                                           duration=dest_duration,
+                                           quantity=volume)
+                    self.state.draw_orders[dest_key] = draw_order
+
+    def convert_geopoint_to_img_coordinates(self, latitude, longitude, width, height):
+        x = int((width/360.0) * (180 + longitude))
+        #convert from degrees to radians
+        latRad = latitude*pi/180
+        mercN = log(tan((pi/4)+(latRad/2)))
+        y = int((height/2)-(width*mercN/(2*pi)))
+        return (x, y)
+
+    def normalize_value(self, value, min_value, max_value):
+        order = math.ceil(math.log10(value))
+        maximum = math.pow(10, order)
+        minimum = math.pow(10, order - 3) if order > 3  else order
+        return ((max_value-min_value)*(value-minimum)/(maximum-minimum)) + min_value
+
+class PulseLedPanelOutput(object):
+    def __init__(self, state, stop_event, led_matrix, target_fps, map_width, map_height):
+        self.state = state
+        self.stop_event = stop_event
+        self.led_matrix = led_matrix
+        self.target_fps = target_fps
+        self.map_width = map_width
+        self.map_height = map_height
+        self.time_per_frame_ms = (1 / self.target_fps) * 1000.
+
+    def run(self):
+        image = Image.new("RGB", (self.map_width, self.map_height))
+        draw = ImageDraw.Draw(image)
+
+        double_buffer = self.led_matrix.CreateFrameCanvas()
+
+        while not self.stop_event.isSet():
+            start_time = time()
+            frame_number = self.state.current_frame_number
+            self.state.current_frame_number += 1
+
+            draw_orders = self.state.draw_orders.copy().items()
+
+            [self.draw_frame_order(draw, frame_number, do, self.state) for do in draw_orders]
+
+            if image is not None:
+                self.led_matrix.SetImage(image)
+                double_buffer = self.led_matrix.SwapOnVSync(double_buffer)
+
+            end_time = time()
+            duration = (end_time - start_time) * 1000
+
+            delta = self.time_per_frame_ms - duration
+            if delta >= 0 and delta < 0.250:
                 continue
-
-            data = json.loads(event.data)
-            source_iso_code = data['source']['iso']
-            dest_iso_code = data['dest']['iso']
-            volume = int(data['volume'])
-
-            source_lat = float(data['source']['lat'])
-            source_lon = float(data['source']['lon'])
-            dest_lat = float(data['dest']['lat'])
-            dest_lon = float(data['dest']['lon'])
-
-            source_point = convert_geopoint_to_img_coordinates(source_lat, source_lon, COLUMNS, ROWS)
-            dest_point = convert_geopoint_to_img_coordinates(dest_lat, dest_lon, COLUMNS, ROWS)
-
-            logging.debug("new point at: %d,%d)" % (source_point[0] , source_point[1]) )
-            logging.debug("new point at: %d,%d)" % (dest_point[0] , dest_point[1]) )
-
-            source_key = source_point
-            dest_key = dest_point
-
-            source_duration = TARGET_FPS * 5
-            dest_duration = TARGET_FPS * 5
-
-            volume = int(max(1, min(10000, math.floor(math.log10(volume)))))
-
-            color_wash_value = int(normalize_value(volume, 5, 10))
-            source_color = fadeColor((30, 177, 252, 0), color_wash_value/100.)
-            dest_color = fadeColor((251, 190, 50, 0), color_wash_value/100.)
-
-            logging.debug("%s -> %s # %d (%d,%d)" % (source_iso_code, dest_iso_code, volume, source_duration, dest_duration))
-
-            if source_key in state.draw_orders:
-                state.draw_orders[source_key].quantity += volume
             else:
-                draw_order = DrawOrder(frame_number=state.current_frame_number,
-                                       x=source_point[0],
-                                       y=source_point[1],
-                                       color=source_color,
-                                       duration=source_duration,
-                                       quantity=volume)
-                state.draw_orders[source_key] = draw_order
+                if delta > 0:
+                    sleep(delta / 1000)
+                else:
+                    print("Slow frame! %d took %dms " % (frame_number, duration))
 
-            if dest_key in state.draw_orders:
-                state.draw_orders[dest_key].duration = volume
-            else:
-                draw_order = DrawOrder(frame_number=state.current_frame_number,
-                                       x=dest_point[0],
-                                       y=dest_point[1],
-                                       color=dest_color,
-                                       duration=dest_duration,
-                                       quantity=volume)
-                state.draw_orders[dest_key] = draw_order
 
-def normalize_value(value, min_value, max_value):
-    order = math.ceil(math.log10(value))
-    maximum = math.pow(10, order)
-    minimum = math.pow(10, order - 3) if order > 3  else order
-    return ((max_value-min_value)*(value-minimum)/(maximum-minimum)) + min_value
+    def draw_frame_order(self, draw,frame_number,draw_order_item, state):
+        draw_order_key = draw_order_item[0]
+        draw_order = draw_order_item[1]
+        point = (draw_order.x, draw_order.y)
+        if draw_order.frame_number > frame_number:
+            return
 
-def draw_panel_outline(draw, color_map, horizontal_number, vertical_number, panel_columns, panel_rows):
-    if PLOT_PANELS_OUTLINE:
-        for v in range(0, vertical_number):
-            for h in range(0, horizontal_number):
-                x = panel_columns * h
-                y = panel_rows * v
-                cell_id = h + v + v * (horizontal_number - 1)
-                color = color_map(cell_id)
-                color_outline = fadeAndNormalizeColor(color, 0.05)
-                draw.rectangle((x, y, x + panel_columns - 1, y + panel_rows - 1), fill=None, outline=color_outline)
-
-def load_background_pixels(image_width, image_height):
-    result = []
-    if PLOT_BACKGROUND_MAP:
-        bg_sf = shapefile.Reader("ne_110m_coastline/ne_110m_coastline.shp")
-        xdist = bg_sf.bbox[2] - bg_sf.bbox[0]
-        ydist = bg_sf.bbox[3] - bg_sf.bbox[1]
-        xratio = image_width/xdist
-        yratio = image_height/ydist
-        for shape in bg_sf.shapes():
-            pixels = []
-            for x, y in shape.points:
-                px = int(COLUMNS - ((bg_sf.bbox[2] - x) * xratio))
-                py = int((bg_sf.bbox[3] - y) * yratio)
-                pixels.append((px, py))
-            result.append(pixels)
-
-    return result
-
-def draw_background(draw, pixels_list):
-    if PLOT_BACKGROUND_MAP:
-        for pixels in pixels_list:
-            draw.polygon(pixels, outline=(40, 25, 25), fill=None)
-
-# Cycle through shared datastore and draw image
-def draw_data(state, led_matrix, stop_event):
-    logging.debug("Starting drawing")
-
-    bg_pixels_list = load_background_pixels(COLUMNS, ROWS)
-    panel_outline_max_colors = PANELS_HORIZONTAL * PANELS_VERTICAL
-    panel_outline_color_map = plt.get_cmap('rainbow_r', panel_outline_max_colors)
-
-    image = Image.new("RGB", (COLUMNS, ROWS))
-    draw = ImageDraw.Draw(image)
-
-    draw_background(draw, bg_pixels_list)
-    draw_panel_outline(draw,
-                       panel_outline_color_map,
-                       PANELS_HORIZONTAL,
-                       PANELS_VERTICAL,
-                       PANEL_COLUMNS,
-                       PANEL_ROWS)
-
-    double_buffer = led_matrix.CreateFrameCanvas()
-
-    while not stop_event.isSet():
-        start_time = time()
-        frame_number = state.current_frame_number
-        state.current_frame_number += 1
-
-        draw_orders = state.draw_orders.copy().items()
-
-        [draw_frame_order(draw, frame_number, do, state) for do in draw_orders]
-        logging.debug("Frame %d drawn" % frame_number)
-
-        if image is not None:
-            led_matrix.SetImage(image)
-            double_buffer = led_matrix.SwapOnVSync(double_buffer)
-
-        end_time = time()
-        duration = (end_time - start_time) * 1000
-        logging.debug("finished render frame %d (%fms)" % (state.current_frame_number, duration) )
-        delta = TIME_PER_FRAME_MS - duration
-        if delta >= 0 and delta < 0.250:
-            continue
+        if draw_order.duration <= draw_order.drawn_frames:
+            draw.point(point, (0, 0, 0))
+            state.draw_orders.pop(draw_order_key, None)
         else:
-            if delta > 0:
-                sleep(delta / 1000)
-            else:
-                logging.info("Slow frame! %d took %dms " % (frame_number, duration))
+            quantity_step = draw_order.quantity / draw_order.duration
+            draw_order.quantity_used += quantity_step
+            color = draw_order.get_color_for_quantity_used()
+            draw.point(point, color)
+            draw_order.drawn_frames += 1
 
-def draw_frame_order(draw,frame_number,draw_order_item, state):
-    draw_order_key = draw_order_item[0]
-    draw_order = draw_order_item[1]
-    point = (draw_order.x, draw_order.y)
-    if draw_order.frame_number > frame_number:
-        return
+class PulseLedView(object):
+    def __init__(self, *args, **kwargs):
+        self.parser = argparse.ArgumentParser()
 
-    if draw_order.duration <= draw_order.drawn_frames:
-        logging.debug("order: %s " % draw_order)
-        draw.point(point, (0, 0, 0))
-        state.draw_orders.pop(draw_order_key, None)
-    else:
-        quantity_step = draw_order.quantity / draw_order.duration
-        draw_order.quantity_used += quantity_step
-        color = draw_order.get_color_for_quantity_used()
-        logging.debug("order: %s color: %s" % (draw_order, color))
-        draw.point(point, color)
-        draw_order.drawn_frames += 1
+        self.parser.add_argument("-r", "--led-rows", action="store", help="Display rows. 16 for 16x32, 32 for 32x32. Default: 32", default=32, type=int)
+        self.parser.add_argument("-c", "--led-chain", action="store", help="Daisy-chained boards. Default: 2.", default=2, type=int)
+        self.parser.add_argument("-P", "--led-parallel", action="store", help="For Plus-models or RPi2: parallel chains. 1..3. Default: 1", default=1, type=int)
+        self.parser.add_argument("-p", "--led-pwm-bits", action="store", help="Bits used for PWM. Something between 1..11. Default: 11", default=11, type=int)
+        self.parser.add_argument("-b", "--led-brightness", action="store", help="Sets brightness level. Default: 100. Range: 1..100", default=100, type=int)
+        self.parser.add_argument("-m", "--led-gpio-mapping", help="Hardware Mapping: regular, adafruit-hat, adafruit-hat-pwm Default: adafruit-hat" , choices=['regular', 'adafruit-hat', 'adafruit-hat-pwm'], default="adafruit-hat", type=str)
+        self.parser.add_argument("--led-scan-mode", action="store", help="Progressive or interlaced scan. 0 Progressive, 1 Interlaced (default)", default=1, choices=range(2), type=int)
+        self.parser.add_argument("--led-pwm-lsb-nanoseconds", action="store", help="Base time-unit for the on-time in the lowest significant bit in nanoseconds. Default: 130", default=130, type=int)
+        self.parser.add_argument("--led-show-refresh", action="store_true", help="Shows the current refresh rate of the LED panel")
+        self.parser.add_argument("--led-slowdown-gpio", action="store", help="Slow down writing to GPIO. Range: 1..100. Default: 1", choices=range(3), type=int)
+        self.parser.add_argument("--led-no-hardware-pulse", action="store", help="Don't use hardware pin-pulse generation")
+        self.parser.add_argument("--led-rgb-sequence", action="store", help="Switch if your matrix has led colors swapped. Default: RGB", default="RGB", type=str)
+        self.parser.add_argument("--cache-location", action="store", help="Location of the cache folder Default: ./pulse-cache", default="./pulse-cache", type=str)
+        self.parser.add_argument("--log-level", action="store", help="Log level Default: DEBUG", default="DEBUG", type=str)
 
+    def initialize_and_run(self):
+        self.args = self.parser.parse_args()
 
-logging.info("Initializing internals...")
-draw_state = DrawState()
-stop_event = threading.Event()
+        logging_level = logging.getLevelName(self.args.log_level)
+        self.logging = logging.basicConfig(level=logging_level, format='%(asctime)-15s [%(levelname)s] (%(threadName)-10s) %(message)s', )
 
-logging.info("Initializing LED matrix...")
+        logging.info("Initializing LED matrix...")
+        options = RGBMatrixOptions()
 
-# LED matrix
-## Configuration for the matrix
-options = RGBMatrixOptions()
-options.rows = 32
-options.chain_length = 2
-options.parallel = 1
-options.hardware_mapping = 'adafruit-hat'
-led_matrix = RGBMatrix(options = options)
-led_matrix.Clear()
-logging.info("Done intializing LED matrix")
+        if self.args.led_gpio_mapping != None:
+          options.hardware_mapping = self.args.led_gpio_mapping
 
-producer_thread = threading.Thread(name='data-producer-thread',
-                                   target=produce_data,
-                                   args=(draw_state, stop_event,))
-producer_thread.setDaemon(True)
-producer_thread.start()
+        options.rows = self.args.led_rows
+        options.chain_length = self.args.led_chain
+        options.parallel = self.args.led_parallel
+        options.pwm_bits = self.args.led_pwm_bits
+        options.brightness = self.args.led_brightness
+        options.pwm_lsb_nanoseconds = self.args.led_pwm_lsb_nanoseconds
+        options.led_rgb_sequence = self.args.led_rgb_sequence
 
-logging.info("Drawing startup sequence")
-draw_logo(led_matrix)
-sleep(2)
-countdown(led_matrix)
+        if self.args.led_show_refresh:
+          options.show_refresh_rate = 1
 
-led_matrix.Clear()
+        if self.args.led_slowdown_gpio != None:
+            options.gpio_slowdown = self.args.led_slowdown_gpio
 
-draw_thread = threading.Thread(name='data-draw-thread',
-                               target=draw_data,
-                               args=(draw_state, led_matrix, stop_event,))
-draw_thread.setDaemon(True)
-draw_thread.start()
+        if self.args.led_no_hardware_pulse:
+          options.disable_hardware_pulsing = True
 
-# to keep shell alive
-raw_input('\n\nAny key to exit\n\n')
-logging.info("Done! \n\n")
-stop_event.set()
+        self.matrix = RGBMatrix(options = options)
 
-producer_thread.join()
-draw_thread.join()
+        #self.led_pulse_cache = FanoutCache(self.args.cache_location, shards=20, timeout=1)
+        self.columns = self.args.led_rows * self.args.led_chain
+        self.rows = 32
 
-led_matrix.Clear()
+        # TODO: configure me
+        self.pulse_events_url = "http://192.168.1.7:9201/events"
+
+        # TODO: configure me
+        self.target_fps = 24.
+        self.time_per_frame_ms = (1 / self.target_fps) * 1000.
+
+        self.draw_state = DrawState()
+        self.stop_event = threading.Event()
+
+        try:
+            # Start loop
+            print("Press CTRL-C to stop sample")
+            self.run()
+        except KeyboardInterrupt:
+            print("Exiting\n")
+            self.stop_event.set()
+            sys.exit(0)
+
+        return True
+
+    def draw_text(self, matrix, x, y, text, size = 20):
+        font = ImageFont.truetype('fonts/FiraCode-Regular.ttf', size)
+        image = Image.new("RGB", (self.columns, self.rows))
+        draw = ImageDraw.Draw(image)
+
+        text_width, text_height = font.getsize(text)
+
+        draw.text((x - text_width/2 ,y - text_height/2), text, font=font, fill=(41,161,228,0))
+
+        self.matrix.SetImage(image.convert('RGB'))
+
+    def draw_logo(self):
+        logging.info("Display TS logo...")
+        logo_image = Image.open("images/tradeshift.jpg")
+        logo_image.thumbnail((self.columns, self.rows), Image.ANTIALIAS)
+        logo_image_width, logo_image_height = logo_image.size
+
+        x = (self.columns - logo_image_width) / 2
+        y = (self.rows - logo_image_height) / 2
+
+        self.matrix.SetImage(logo_image.convert('RGB'), x, y)
+
+    def countdown(self):
+        for value in reversed(range(0, 10)):
+            self.draw_text(self.matrix, (self.columns / 2), (self.rows / 2), str(value), 20)
+            sleep(0.125)
+
+        self.matrix.Clear()
+
+    def run(self):
+        self.draw_logo()
+        sleep(2)
+        self.countdown()
+
+        pulse_data_producer = PulseDataProducer(self.draw_state,
+                                                self.stop_event,
+                                                self.pulse_events_url,
+                                                self.target_fps,
+                                                self.columns,
+                                                self.rows
+                                               )
+
+        pulse_led_panel_output = PulseLedPanelOutput( self.draw_state,
+                                                self.stop_event,
+                                                self.matrix,
+                                                self.target_fps,
+                                                self.columns,
+                                                self.rows
+                                               )
+
+        producer_thread = threading.Thread(name='data-producer-thread',
+                                   target=pulse_data_producer.run)
+        producer_thread.setDaemon(True)
+        producer_thread.start()
+
+        draw_thread = threading.Thread(name='data-draw-thread',
+                                       target=pulse_led_panel_output.run,)
+        draw_thread.setDaemon(True)
+        draw_thread.start()
+
+        producer_thread.join()
+        draw_thread.join()
+
+# Main function
+if __name__ == "__main__":
+    pulse_led_view = PulseLedView()
+    if (not pulse_led_view.initialize_and_run()):
+        pulse_led_view.print_help()
